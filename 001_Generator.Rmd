@@ -1,0 +1,134 @@
+---
+title: Fantasy Draft Cheat Sheet
+author: "Nick Bachelder"
+date: "2023-08-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, include = FALSE, warning = FALSE, message = FALSE, cache=TRUE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(here)
+library(nflfastR)
+library(lme4)
+library(glmnet)
+library(gt)
+library(gtsummary)
+library(gtExtras)
+library(stringdist)
+library(fuzzyjoin)
+library(caret)
+library(xgboost)
+library(pbapply)
+library(ggridges)
+library(XML)
+library(RCurl)
+library(stringr)
+library(rlist)
+library(ggpubr)
+
+source("helper_functions.R")
+```
+
+
+## Predicted AEPL and How We Can Use Expected Positional Loss To Make Draft Decisions...
+
+We can use this to **use the predictions made by FantasyPros to create predicted EPL Curves and AEPL Plots**.
+
+### Instructions:
+
+Download and change filepaths to those released by FantasyPros (ADP, Projections (WR, RB, TE, QB)). Change filepaths below with those. Run all code.
+
+```{r}
+adp_projection_file_path <- here::here("data/2024/FantasyPros_2024_Overall_ADP_Rankings.csv")
+base_points_projection_file_path <- here::here("data/2024/FantasyPros_Fantasy_Football_Projections_")
+```
+
+Below calculates best AEPL picks, but these are not neccecarily best picks (since some positions need more players than others and oppurtinity cost is valuable).
+
+```{r}
+# Pull FantasyPros Projections and ADP Consensus data from CSV
+adp <- read.csv(adp_projection_file_path) %>%
+  dplyr::select(Player, AVG, POS) %>% dplyr::rename(player_name = Player, projection_adp = AVG, position_name = POS) %>%
+  mutate(position_name = substring(position_name, 1, 2))
+
+projections <- do.call(rbind, lapply(here::here(paste0(base_points_projection_file_path, c("WR.csv", "TE.csv", "QB.csv", "RB.csv"))), 
+                      function(x) {read.csv(x) %>% dplyr::select(Player, FPTS) %>% dplyr::rename(player_name = Player, total_fantasy_points = FPTS) %>%
+                          filter(!is.na(player_name), !is.na(total_fantasy_points))}))
+
+# Create expected draft board for 2024
+draft_board <- projections %>% left_join(adp, by = 'player_name') %>% filter(complete.cases(.), projection_adp < 216)
+
+# Cauluate EPL from first turn for all turns
+analyzed <- calculate_all_EPL(draft_board)
+
+# Calculate and and plot EPL and AEPL turn to turn for 2023
+aepl_plots <- plot_AEPL(analyzed_round = analyzed, year = "2024")
+EPL_Curve(analyzed, year = "2024")
+ggarrange(aepl_plots$plot, labels = c(""), ncol = 1, nrow = 1, common.legend = TRUE, legend = "bottom") 
+aepl_plots$best_picks %>% tab_header(
+    title = md("Best AEPL Pick Locations for Most Valuable Players"),
+    subtitle = md("Using **AEPL (Average Expected Positional Loss Per Turn Before Next Pick)**"))
+```
+
+
+Lets use "Roster EPL Maximization" to **figure out the optimal positional pick order based on which draft order a particular drafter is placed in**. It looks like a great year for "Zero RB."
+
+
+```{r}
+all_aepl_picks <- do.call(rbind, lapply(seq(1, 100, by = 1), function(turn) {
+    get_all_AEPL_from_pick(pick = turn, analyzed_round = analyzed) %>% mutate(pick = turn)
+}))
+```
+
+Which players do these positional selections equate to aiming for? 
+
+
+### SAFE
+
+```{r}
+p <- plot_positional_value(aepl_options=all_aepl_picks, year = '2024', picked_prob_cutoff = 0.9)
+
+p$plot_1
+
+p$df %>% mutate(label = paste0(player_name, " (", 100-round(prob_picked_current_turn*100, 2), "% Avail.)"), pick_order = paste0("Pick Order ",pick_order)) %>%
+  dplyr::select(pick_number, pick_order, label) %>%
+  dplyr::rename(`Pick Number` = pick_number) %>%
+  pivot_wider(names_from = pick_order, values_from = c(label)) %>% gt()  %>%
+    gt_theme_538()%>% tab_header(
+    title = md("Target Players For 2024 Best Ball Draft by Pick Order and Number"),
+    subtitle = md("**Using EPL Roster Maximization**"))
+```
+
+### MEDIUM
+
+```{r}
+p <- plot_positional_value(aepl_options=all_aepl_picks, year = '2024', picked_prob_cutoff = 0.5)
+
+p$plot_1
+
+p$df %>% mutate(label = paste0(player_name, " (", 100-round(prob_picked_current_turn*100, 2), "% Avail.)"), pick_order = paste0("Pick Order ",pick_order)) %>%
+  dplyr::select(pick_number, pick_order, label) %>%
+  dplyr::rename(`Pick Number` = pick_number) %>%
+  pivot_wider(names_from = pick_order, values_from = c(label)) %>% gt()  %>%
+    gt_theme_538()%>% tab_header(
+    title = md("Target Players For 2024 Best Ball Draft by Pick Order and Number"),
+    subtitle = md("**Using EPL Roster Maximization**"))
+```
+
+### RISKY
+
+```{r}
+p <- plot_positional_value(aepl_options=all_aepl_picks, year = '2024', picked_prob_cutoff = 0.2)
+
+p$plot_1
+
+p$df %>% mutate(label = paste0(player_name, " (", 100-round(prob_picked_current_turn*100, 2), "% Avail.)"), pick_order = paste0("Pick Order ",pick_order)) %>%
+  dplyr::select(pick_number, pick_order, label) %>%
+  dplyr::rename(`Pick Number` = pick_number) %>%
+  pivot_wider(names_from = pick_order, values_from = c(label)) %>% gt()  %>%
+    gt_theme_538()%>% tab_header(
+    title = md("Target Players For 2024 Best Ball Draft by Pick Order and Number"),
+    subtitle = md("**Using EPL Roster Maximization**"))
+```
